@@ -11,6 +11,7 @@ An interactive financial dashboard built with **Python** and **Streamlit** for a
 ## ⚙️ Tech Stack
 `Python` · `Streamlit` · `pandas` · `yfinance` · `plotly` · `ta`
 
+live link :- https://ai-quant-trading-dashboard-wbwknvzrl8wzit3qelptux.streamlit.app/
 ## 🧠 How to Run
 ```bash
 git clone https://github.com/visha-loop/ai-quant-trading-dashboard.git
@@ -19,4 +20,6 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 streamlit run app_trading_dashboard_clean.py
+'',bash
+
 
