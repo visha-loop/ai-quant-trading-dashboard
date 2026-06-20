@@ -3,127 +3,470 @@ import pandas as pd
 import yfinance as yf
 import ta
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="AI Quant Dashboard", page_icon="💹", layout="wide")
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="AI Quant Dashboard", layout="wide")
+# ---------------- CUSTOM CSS ----------------
+st.markdown("""
+<style>
 
-st.markdown("<h1 style='text-align:center;'>💹 AI Quant Trading Dashboard</h1>", unsafe_allow_html=True)
-st.divider()
+/* KPI Cards */
+[data-testid="stMetric"]{
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    padding: 20px;
+    border-radius: 16px;
+    text-align: center;
+    box-shadow: 0px 0px 20px rgba(0,255,150,0.08);
+}
 
+/* Sidebar */
+section[data-testid="stSidebar"]{
+    background-color:#0b1220;
+}
+
+/* Main App */
+.stApp{
+    background-color:#050b16;
+}
+
+/* Tabs */
+button[data-baseweb="tab"]{
+    font-size:16px;
+}
+.stTabs [data-baseweb="tab-list"] {
+    gap: 20px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    height: 50px;
+    border-radius: 10px;
+}
+
+</style>
+""", unsafe_allow_html=True)
+    
+
+st.markdown("# Quant AI Terminal")
+st.caption("AI-Powered Market Analysis & Trading Dashboard")
+
+# ---------------- SIDEBAR ----------------
 st.sidebar.header("⚙️ Settings")
 
 stock_options = {
-    "📈 Apple (AAPL)": "AAPL",
-    "🚗 Tesla (TSLA)": "TSLA",
-    "💻 Microsoft (MSFT)": "MSFT",
-    "🛒 Amazon (AMZN)": "AMZN",
-    "💡 NVIDIA (NVDA)": "NVDA",
-    "🏢 Reliance (RELIANCE.NS)": "RELIANCE.NS",
-    "🧠 Infosys (INFY.NS)": "INFY.NS",
-    "💰 HDFC Bank (HDFCBANK.NS)": "HDFCBANK.NS",
-    "₿ Bitcoin (BTC-USD)": "BTC-USD",
-    "Ξ Ethereum (ETH-USD)": "ETH-USD"
+    "Apple Inc. (AAPL)": "AAPL",
+    "Tesla (TSLA)": "TSLA",
+    "Microsoft (MSFT)": "MSFT",
+    "Amazon (AMZN)": "AMZN",
+    "NVIDIA (NVDA)": "NVDA",
+    "Reliance (RELIANCE.NS)": "RELIANCE.NS",
+    "Infosys (INFY.NS)": "INFY.NS",
 }
 
-ticker = stock_options[st.sidebar.selectbox("Select Asset", list(stock_options.keys()))]
-interval = st.sidebar.selectbox("Interval", ["1d", "1h", "15m"])
-period = st.sidebar.selectbox("Period", ["7d", "30d", "60d", "90d", "180d", "1y"])
+ticker_name = st.sidebar.selectbox("Select Asset", list(stock_options.keys()))
+ticker = stock_options[ticker_name]
 
-if interval in ["1h", "15m"] and period not in ["7d", "30d", "60d"]:
-    period = "60d"
+interval = st.sidebar.selectbox("Interval", ["1d", "1h", "15m"], index=0)
+period = st.sidebar.selectbox("Period", ["7d", "30d", "60d", "90d", "180d", "1y"], index=1)
+chart_mode = st.sidebar.selectbox(
+    "Technical View",
+    [
+        "Price Only",
+        "Price + Volume",
+        "Price + MACD",
+        "Full Analysis"
+    ]
+)
 
-@st.cache_data(ttl=300)
-def load_data(ticker, period, interval):
-    try:
-        df = yf.download(ticker, period=period, interval=interval)
-        if df.empty:
-            return None
-        df.reset_index(inplace=True)
-        return df
-    except:
-        return None
+# ---------------- DATA ----------------
+df = yf.download(ticker, period=period, interval=interval)
 
-df = load_data(ticker, period, interval)
-
-if df is None:
-    st.error("❌ Data fetch failed. Try again later.")
+if df.empty:
+    st.error("No data found")
     st.stop()
 
-df["sma_20"] = df["Close"].rolling(20).mean()
-df["ema_12"] = df["Close"].ewm(span=12, adjust=False).mean()
-df["rsi"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
+# ✅ FIX 1: flatten columns (yfinance bug)
+df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
-tab1, tab2, tab3, tab4 = st.tabs(["🏢 Overview", "📊 Technicals", "🤖 AI Insights", "📈 Backtest"])
+df = df.dropna()
 
-# --- OVERVIEW ---
+# ---------------- COMPANY INFO ----------------
+info = {}
+try:
+    t = yf.Ticker(ticker)
+    info = t.info
+except:
+    info = {}
+
+# ---------------- INDICATORS ----------------
+close = df["Close"]
+
+# ✅ ensure it's a proper Series
+if isinstance(close, pd.DataFrame):
+    close = close.iloc[:, 0]
+
+df["sma_20"] = close.rolling(20).mean()
+df["ema_12"] = close.ewm(span=12, adjust=False).mean()
+
+# ✅ FINAL RSI FIX (correct one)
+df["rsi"] = ta.momentum.RSIIndicator(close).rsi()
+macd = ta.trend.MACD(close)
+bollinger = ta.volatility.BollingerBands(close)
+
+df["bb_high"] = bollinger.bollinger_hband()
+df["bb_low"] = bollinger.bollinger_lband()
+df["bb_mid"] = bollinger.bollinger_mavg()
+
+df["macd"] = macd.macd()
+df["macd_signal"] = macd.macd_signal()
+df["macd_hist"] = df["macd"] - df["macd_signal"]
+
+# ---------------- TABS ----------------
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Technicals", "🤖 AI Insights", "📉 Backtest"])
+
+latest_rsi = df["rsi"].iloc[-1]
+latest_macd = df["macd"].iloc[-1]
+
+if latest_macd > 0:
+    trend = "Bullish 📈"
+else:
+    trend = "Bearish 📉"
+
+signal = "BUY" if latest_rsi < 70 and latest_macd > 0 else "HOLD"
+# ================= OVERVIEW =================
 with tab1:
-    st.subheader(f"🏢 {ticker}")
+    latest_rsi = df["rsi"].iloc[-1]
+    latest_macd = df["macd"].iloc[-1]
 
-    current_price = df["Close"].iloc[-1]
-    prev_price = df["Close"].iloc[-2]
-
-    change = current_price - prev_price
-    change_pct = (change / prev_price) * 100
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Price", f"${current_price:.2f}", f"{change_pct:.2f}%")
-    col2.metric("Volume", f"{int(df['Volume'].iloc[-1]):,}")
-
-    trend = "Bullish" if df["ema_12"].iloc[-1] > df["sma_20"].iloc[-1] else "Bearish"
-    col3.metric("Trend", trend)
-
-    st.divider()
-
-    if trend == "Bullish":
-        st.success("Momentum is positive")
+    if latest_macd > 0:
+        trend = "Bullish 📈"
     else:
-        st.error("Momentum is weak")
+        trend = "Bearish 📉"
 
-    rsi = df["rsi"].iloc[-1]
-    if rsi > 70:
-        st.warning("Overbought")
-    elif rsi < 30:
-        st.warning("Oversold")
-    else:
-        st.info("RSI neutral")
+    signal = "BUY" if latest_rsi < 70 and latest_macd > 0 else "HOLD"
 
-# --- TECHNICALS ---
+    k1, k2, k3, k4 = st.columns(4)
+
+    k1.metric(
+    "💰 Price",
+    f"${close.iloc[-1]:.2f}"
+)
+
+    k2.metric(
+    "📊 RSI",
+    f"{latest_rsi:.2f}"
+)
+
+    k3.metric(
+    "📈 Trend",
+    trend
+)
+
+    k4.metric(
+    "🎯 Signal",
+    signal
+)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader(ticker_name)
+
+        current_price = close.iloc[-1]
+        prev_price = close.iloc[-2]
+
+        change = current_price - prev_price
+        change_pct = (change / prev_price) * 100
+
+        st.metric("Current Price", f"${current_price:.2f}", f"{change_pct:.2f}%")
+
+        st.write("Market Cap:", info.get("marketCap", "N/A"))
+        st.write("Sector:", info.get("sector", "N/A"))
+        st.write("Country:", info.get("country", "N/A"))
+
+    with col2:
+    
+        st.subheader("Company Summary:")
+        st.info(info.get("longBusinessSummary", "No data available"))
+st.write("Selected Mode:", chart_mode)
+# ================= TECHNICALS =================
 with tab2:
-    fig = go.Figure()
 
-    fig.add_trace(go.Candlestick(
-        x=df["Date"],
-        open=df["Open"],
-        high=df["High"],
-        low=df["Low"],
-        close=df["Close"]
-    ))
+    st.write("Selected Mode:", chart_mode)
 
-    fig.add_trace(go.Scatter(x=df["Date"], y=df["sma_20"], name="SMA"))
-    fig.add_trace(go.Scatter(x=df["Date"], y=df["ema_12"], name="EMA"))
+    volume_colors = [
+        "green" if close >= open_ else "red"
+        for close, open_ in zip(df["Close"], df["Open"])
+    ]
+
+    hist_colors = [
+        "green" if val >= 0 else "red"
+        for val in df["macd_hist"]
+    ]
+
+    # ---------------- PRICE ONLY ----------------
+    if chart_mode == "Price Only":
+
+        fig = make_subplots(rows=1, cols=1)
+
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df["Open"],
+                high=df["High"],
+                low=df["Low"],
+                close=df["Close"],
+                name="Candlestick"
+            )
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["sma_20"],
+                name="SMA"
+            )
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["ema_12"],
+                name="EMA"
+            )
+        )
+
+    # ---------------- PRICE + VOLUME ----------------
+    elif chart_mode == "Price + Volume":
+
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            row_heights=[0.8, 0.2]
+        )
+
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df["Open"],
+                high=df["High"],
+                low=df["Low"],
+                close=df["Close"],
+                name="Candlestick"
+            ),
+            row=1,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df["Volume"],
+                name="Volume",
+                marker_color=volume_colors
+            ),
+            row=2,
+            col=1
+        )
+
+    # ---------------- PRICE + MACD ----------------
+    elif chart_mode == "Price + MACD":
+
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            row_heights=[0.75, 0.25]
+        )
+
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df["Open"],
+                high=df["High"],
+                low=df["Low"],
+                close=df["Close"],
+                name="Candlestick"
+            ),
+            row=1,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["macd"],
+                name="MACD"
+            ),
+            row=2,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["macd_signal"],
+                name="Signal Line"
+            ),
+            row=2,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df["macd_hist"],
+                name="Histogram",
+                marker_color=hist_colors
+            ),
+            row=2,
+            col=1
+        )
+
+    # ---------------- FULL ANALYSIS ----------------
+    else:
+
+        fig = make_subplots(
+            rows=3,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.7, 0.15, 0.15]
+        )
+
+        # Price
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df["Open"],
+                high=df["High"],
+                low=df["Low"],
+                close=df["Close"],
+                name="Candlestick"
+            ),
+            row=1,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["sma_20"],
+                name="SMA"
+            ),
+            row=1,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["ema_12"],
+                name="EMA"
+            ),
+            row=1,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["bb_high"],
+                name="BB Upper"
+            ),
+            row=1,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["bb_low"],
+                name="BB Lower"
+            ),
+            row=1,
+            col=1
+        )
+
+        # Volume
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df["Volume"],
+                name="Volume",
+                marker_color=volume_colors
+            ),
+            row=2,
+            col=1
+        )
+
+        # MACD
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["macd"],
+                name="MACD"
+            ),
+            row=3,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df["macd_signal"],
+                name="Signal Line"
+            ),
+            row=3,
+            col=1
+        )
+
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df["macd_hist"],
+                name="Histogram",
+                marker_color=hist_colors
+            ),
+            row=3,
+            col=1
+        )
+
+    fig.update_layout(
+        height=800,
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark"
+    )
 
     st.plotly_chart(fig, use_container_width=True)
 
-# --- AI ---
+# ================= AI =================
 with tab3:
     ema = df["ema_12"].iloc[-1]
     sma = df["sma_20"].iloc[-1]
+    rsi = df["rsi"].iloc[-1]
 
-    if ema > sma:
-        st.success("AI Signal: BUY")
+    st.subheader("AI Decision")
+
+    if ema > sma and rsi < 60:
+        st.success("BUY Signal")
+    elif ema < sma and rsi > 40:
+        st.error("SELL Signal")
     else:
-        st.error("AI Signal: SELL")
+        st.warning("HOLD Signal")
 
-# --- BACKTEST ---
+    st.write(f"RSI: {rsi:.2f}")
+
+# ================= BACKTEST =================
 with tab4:
     balance = 10000
     position = 0
     entry = 0
 
     for i in range(1, len(df)):
-        price = df.loc[i, "Close"]
-        ema = df.loc[i, "ema_12"]
-        sma = df.loc[i, "sma_20"]
+        price = df["Close"].iloc[i]
+        ema = df["ema_12"].iloc[i]
+        sma = df["sma_20"].iloc[i]
 
         if ema > sma and position == 0:
             entry = price
@@ -132,5 +475,8 @@ with tab4:
         elif ema < sma and position == 1:
             balance += price - entry
             position = 0
+
+    if position == 1:
+        balance += df["Close"].iloc[-1] - entry
 
     st.metric("Final Balance", f"${balance:.2f}")
