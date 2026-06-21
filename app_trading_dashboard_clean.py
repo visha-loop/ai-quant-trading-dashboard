@@ -4,6 +4,9 @@ import yfinance as yf
 import ta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 
 # ---------------- CONFIG ----------------
 st.set_page_config(page_title="AI Quant Dashboard", layout="wide")
@@ -120,11 +123,27 @@ df["bb_mid"] = bollinger.bollinger_mavg()
 
 df["macd"] = macd.macd()
 df["macd_signal"] = macd.macd_signal()
-df["macd_hist"] = df["macd"] - df["macd_signal"]
+df["macd_hist"] = (
+    df["macd"] - df["macd_signal"]
+)
+
+# Tomorrow's movement
+
+# Tomorrow's movement
+
+df["target"] = (
+    df["Close"].shift(-1) > df["Close"]
+).astype(int)
+
+df_ml = df.dropna().copy()
+
+
 
 # ---------------- TABS ----------------
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Technicals", "🤖 AI Insights", "📉 Backtest"])
-
+if len(df) == 0:
+    st.error("DataFrame is empty after processing")
+    st.stop()
 latest_rsi = df["rsi"].iloc[-1]
 latest_macd = df["macd"].iloc[-1]
 
@@ -187,7 +206,7 @@ with tab1:
     
         st.subheader("Company Summary:")
         st.info(info.get("longBusinessSummary", "No data available"))
-st.write("Selected Mode:", chart_mode)
+
 # ================= TECHNICALS =================
 with tab2:
 
@@ -441,21 +460,97 @@ with tab2:
     st.plotly_chart(fig, use_container_width=True)
 
 # ================= AI =================
+# ================= AI =================
 with tab3:
+
     ema = df["ema_12"].iloc[-1]
     sma = df["sma_20"].iloc[-1]
     rsi = df["rsi"].iloc[-1]
+    macd_value = df["macd"].iloc[-1]
+    macd_signal = df["macd_signal"].iloc[-1]
 
-    st.subheader("AI Decision")
+    st.header("🤖 AI Market Analyst")
 
-    if ema > sma and rsi < 60:
-        st.success("BUY Signal")
-    elif ema < sma and rsi > 40:
-        st.error("SELL Signal")
+    # ---------------- SIGNAL ----------------
+
+    if ema > sma and macd_value > macd_signal and rsi < 70:
+
+        recommendation = "BUY"
+        confidence = 85
+        risk = "Medium"
+
+    elif ema < sma and macd_value < macd_signal:
+
+        recommendation = "SELL"
+        confidence = 80
+        risk = "High"
+
     else:
-        st.warning("HOLD Signal")
 
-    st.write(f"RSI: {rsi:.2f}")
+        recommendation = "HOLD"
+        confidence = 65
+        risk = "Low"
+    st.subheader("Current Indicators")
+
+    c1,c2,c3 = st.columns(3)
+
+    c1.metric("RSI", f"{rsi:.2f}")
+    c2.metric("MACD", f"{macd_value:.2f}")
+    c3.metric("EMA vs SMA", f"{ema - sma:.2f}")
+
+    # ---------------- KPI ----------------
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric("Recommendation", recommendation)
+    c2.metric("Confidence", f"{confidence}%")
+    c3.metric("Risk Level", risk)
+
+    st.divider()
+
+    # ---------------- REASONING ----------------
+
+    st.subheader("AI Reasoning")
+
+    if rsi > 70:
+        st.write("• RSI indicates overbought conditions.")
+    elif rsi < 30:
+        st.write("• RSI indicates oversold conditions.")
+    else:
+        st.write("• RSI is neutral.")
+
+    if macd_value > macd_signal:
+        st.write("• MACD is above signal line (Bullish Momentum).")
+    else:
+        st.write("• MACD is below signal line (Bearish Momentum).")
+
+    if ema > sma:
+        st.write("• Short-term trend remains positive.")
+    else:
+        st.write("• Short-term trend remains weak.")
+        st.divider()
+
+    trend_score = 40 if ema > sma else 20
+    momentum_score = 30 if macd_value > macd_signal else 15
+    
+
+    if 40 <= rsi <= 60:
+        rsi_score = 30
+    else:
+        rsi_score = 15
+
+    health_score = trend_score + momentum_score + rsi_score
+
+    st.subheader("📊 Market Health Score")
+
+    st.progress(health_score / 100)
+
+    st.metric(
+        "Overall Score",
+        f"{health_score}/100"
+    )
+
+
 
 # ================= BACKTEST =================
 with tab4:
