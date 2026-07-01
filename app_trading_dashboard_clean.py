@@ -7,6 +7,7 @@ from plotly.subplots import make_subplots
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
+import numpy as np
 
 # ---------------- CONFIG ----------------
 st.set_page_config(page_title="AI Quant Dashboard", layout="wide")
@@ -83,7 +84,16 @@ chart_mode = st.sidebar.selectbox(
 )
 
 # ---------------- DATA ----------------
-df = yf.download(ticker, period=period, interval=interval)
+# Determine a safe download period that has enough history to calculate indicators
+download_period = period
+if interval == "1d":
+    download_period = "1y"
+elif interval == "1h":
+    download_period = "60d"
+elif interval == "15m":
+    download_period = "60d"
+
+df = yf.download(ticker, period=download_period, interval=interval)
 
 if df.empty:
     st.error("No data found")
@@ -126,8 +136,54 @@ df["macd_signal"] = macd.macd_signal()
 df["macd_hist"] = (
     df["macd"] - df["macd_signal"]
 )
+# Momentum Features
 
-# Tomorrow's movement
+df["momentum_5d"] = (
+    df["Close"] /
+    df["Close"].shift(5)
+)
+
+df["momentum_10d"] = (
+    df["Close"] /
+    df["Close"].shift(10)
+)
+
+# Volatility
+
+df["volatility"] = (
+    df["Close"]
+    .pct_change()
+    .rolling(10)
+    .std()
+)
+
+# Volume Moving Average
+
+df["volume_ma"] = (
+    df["Volume"]
+    .rolling(10)
+    .mean()
+)
+# ML Features
+
+df["returns"] = df["Close"].pct_change()
+
+# Calculate rolling volatilities for 3D term structure surface
+vol_windows = [5, 10, 15, 20, 25, 30]
+for w in vol_windows:
+    df[f"vol_term_{w}"] = df["returns"].rolling(w).std() * np.sqrt(252) * 100
+
+df["volatility"] = (
+    df["returns"]
+    .rolling(10)
+    .std()
+)
+
+df["volume_ma"] = (
+    df["Volume"]
+    .rolling(10)
+    .mean()
+)
 
 # Tomorrow's movement
 
@@ -137,13 +193,81 @@ df["target"] = (
 
 df_ml = df.dropna().copy()
 
+# ================= ML MODEL =================
 
+features = [
+    "rsi",
+    "macd",
+    "macd_signal",
+    "sma_20",
+    "ema_12",
+    "volatility",
+    "volume_ma",
+    "momentum_5d",
+    "momentum_10d"
+]
 
-# ---------------- TABS ----------------
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "📈 Technicals", "🤖 AI Insights", "📉 Backtest"])
-if len(df) == 0:
-    st.error("DataFrame is empty after processing")
+has_enough_ml_data = len(df_ml) >= 10
+
+if has_enough_ml_data:
+    X = df_ml[features]
+    y = df_ml["target"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        shuffle=False
+    )
+
+    model = RandomForestClassifier(
+        n_estimators=100,
+        random_state=42
+    )
+
+    model.fit(X_train, y_train)
+
+    preds = model.predict(X_test)
+
+    accuracy = accuracy_score(
+        y_test,
+        preds
+    )
+    importance_df = pd.DataFrame({
+        "Feature": features,
+        "Importance": model.feature_importances_
+    })
+
+    importance_df = (
+        importance_df
+        .sort_values(
+            by="Importance",
+            ascending=False
+        )
+    )
+
+# Slice df to requested period for display/dashboard calculations
+if period.endswith("d"):
+    days = int(period[:-1])
+    cutoff_date = df.index[-1] - pd.Timedelta(days=days)
+elif period.endswith("y"):
+    years = int(period[:-1])
+    cutoff_date = df.index[-1] - pd.DateOffset(years=years)
+else:
+    cutoff_date = df.index[0]
+
+df = df.loc[df.index >= cutoff_date]
+if df.empty:
+    st.error("No data found for the selected display period.")
     st.stop()
+
+close = df["Close"]
+if isinstance(close, pd.DataFrame):
+    close = close.iloc[:, 0]
+
+# ---------------- TABS --------------------------
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "📈 Technicals", "🤖 AI Insights", "📉 Backtest", "🧊 3D Visualizer"])
+
 latest_rsi = df["rsi"].iloc[-1]
 latest_macd = df["macd"].iloc[-1]
 
@@ -549,6 +673,58 @@ with tab3:
         "Overall Score",
         f"{health_score}/100"
     )
+    st.divider()
+
+    # ---------------- ML PREDICTION ----------------
+    st.subheader("🧠 Machine Learning Prediction")
+    st.divider()
+
+    if not has_enough_ml_data:
+        st.warning("⚠️ Not enough historical data to train the Machine Learning prediction model. Please select a longer Period or different Interval.")
+    else:
+        st.subheader("Feature Importance")
+
+        fig_importance = go.Figure()
+
+        fig_importance.add_bar(
+            x=importance_df["Importance"],
+            y=importance_df["Feature"],
+            orientation="h"
+        )
+
+        fig_importance.update_layout(
+            title="Feature Importance",
+            height=400
+        )
+
+        st.plotly_chart(
+            fig_importance,
+            use_container_width=True
+        )
+
+        st.metric(
+            "Model Accuracy",
+            f"{accuracy*100:.2f}%"
+        )
+
+        latest_features = X.iloc[[-1]]
+
+        prediction = model.predict(
+            latest_features
+        )[0]
+
+        probability = model.predict_proba(
+            latest_features
+        )[0].max()
+
+        if prediction == 1:
+            st.success(
+                f"📈 Tomorrow Prediction: UP ({probability:.0%})"
+            )
+        else:
+            st.error(
+                f"📉 Tomorrow Prediction: DOWN ({probability:.0%})"
+            )
 
 
 
@@ -575,3 +751,159 @@ with tab4:
         balance += df["Close"].iloc[-1] - entry
 
     st.metric("Final Balance", f"${balance:.2f}")
+
+# ================= 3D VISUALIZER =================
+with tab5:
+    st.header("🧊 3D Quant Visualizer")
+    st.caption("Interactive 3D representations of market trends, patterns, and machine learning structures.")
+
+    viz_mode = st.selectbox(
+        "Select 3D Visualization Mode",
+        [
+            "3D Price-Volume-RSI Trajectory",
+            "3D ML Decision Space",
+            "3D Volatility Term Structure Surface"
+        ]
+    )
+
+    if viz_mode == "3D Price-Volume-RSI Trajectory":
+        st.subheader("3D Price-Volume-RSI Trajectory Path")
+        st.write("Chronological movement of the stock price, trading volume, and RSI momentum indicator in 3D space.")
+
+        fig = go.Figure()
+
+        # Chronological trajectory line
+        fig.add_trace(go.Scatter3d(
+            x=df.index,
+            y=df["Close"],
+            z=df["rsi"],
+            mode='lines',
+            line=dict(
+                color='cyan',
+                width=4
+            ),
+            name='Chronological Path'
+        ))
+
+        # Data scatter points colored by MACD histogram to show bullish vs bearish momentum
+        fig.add_trace(go.Scatter3d(
+            x=df.index,
+            y=df["Close"],
+            z=df["rsi"],
+            mode='markers',
+            marker=dict(
+                size=5,
+                color=df["macd_hist"],
+                colorscale='RdYlGn',  # Red to Yellow to Green
+                colorbar=dict(title="MACD Histogram", x=-0.15),
+                opacity=0.8
+            ),
+            text=[f"Date: {d.strftime('%Y-%m-%d')}<br>Price: ${p:.2f}<br>RSI: {r:.1f}" for d, p, r in zip(df.index, df["Close"], df["rsi"])],
+            hoverinfo='text',
+            name='Trading Days'
+        ))
+
+        fig.update_layout(
+            scene=dict(
+                xaxis_title='Date',
+                yaxis_title='Close Price ($)',
+                zaxis_title='RSI (14)',
+                xaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+                yaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+                zaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+            ),
+            template="plotly_dark",
+            margin=dict(l=0, r=0, b=0, t=20),
+            height=650
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif viz_mode == "3D ML Decision Space":
+        st.subheader("3D Machine Learning Feature Space")
+        st.write("Distribution of daily returns, price volatility, and RSI. Points are color-coded by the day-ahead direction outcome (Green = UP, Red = DOWN) to show how the machine learning model clusters bullish and bearish patterns.")
+
+        if not has_enough_ml_data:
+            st.warning("⚠️ Not enough historical data to display the ML Decision Space. Please select a longer period.")
+        else:
+            fig = go.Figure()
+
+            # Green points for UP tomorrow, Crimson for DOWN tomorrow
+            fig.add_trace(go.Scatter3d(
+                x=df_ml["returns"] * 100,
+                y=df_ml["volatility"] * 100,
+                z=df_ml["rsi"],
+                mode='markers',
+                marker=dict(
+                    size=6,
+                    color=df_ml["target"],
+                    colorscale=[[0, 'crimson'], [1, 'mediumseagreen']],
+                    colorbar=dict(
+                        title="Direction",
+                        tickvals=[0, 1],
+                        ticktext=["DOWN", "UP"],
+                        x=-0.15
+                    ),
+                    opacity=0.9
+                ),
+                text=[f"Date: {d.strftime('%Y-%m-%d')}<br>Return: {ret*100:.2f}%<br>Volatility: {vol*100:.2f}%<br>RSI: {rsi:.1f}" 
+                      for d, ret, vol, rsi in zip(df_ml.index, df_ml["returns"], df_ml["volatility"], df_ml["rsi"])],
+                hoverinfo='text',
+                name='Asset Trading Days'
+            ))
+
+            fig.update_layout(
+                scene=dict(
+                    xaxis_title='Daily Return (%)',
+                    yaxis_title='Price Volatility (%)',
+                    zaxis_title='RSI (14)',
+                    xaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+                    yaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+                    zaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+                ),
+                template="plotly_dark",
+                margin=dict(l=0, r=0, b=0, t=20),
+                height=650
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    elif viz_mode == "3D Volatility Term Structure Surface":
+        st.subheader("3D Volatility Term Structure Surface")
+        st.write("An annualized volatility surface computed dynamically over various lookback windows (5 to 30 trading days). This visualizes how asset risk profile changes across time and timescales.")
+
+        vol_windows = [5, 10, 15, 20, 25, 30]
+        
+        # Check if all volatility columns exist in df
+        missing_vols = [w for w in vol_windows if f"vol_term_{w}" not in df.columns]
+        
+        if missing_vols or df.empty:
+            st.warning("⚠️ Volatility term structure indicators are still computing or lack data. Try selecting a longer Period.")
+        else:
+            z_data = []
+            for w in vol_windows:
+                z_data.append(df[f"vol_term_{w}"].values)
+
+            z_data = np.array(z_data)
+
+            # Create 3D Surface
+            fig = go.Figure(data=[go.Surface(
+                x=df.index,
+                y=vol_windows,
+                z=z_data,
+                colorscale='Plasma',
+                colorbar=dict(title="Annualized Vol %", x=-0.15)
+            )])
+
+            fig.update_layout(
+                scene=dict(
+                    xaxis_title='Date',
+                    yaxis_title='Lookback Window (Days)',
+                    zaxis_title='Annualized Vol (%)',
+                    xaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+                    yaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+                    zaxis=dict(gridcolor='rgba(255,255,255,0.1)', backgroundcolor='black'),
+                ),
+                template="plotly_dark",
+                margin=dict(l=0, r=0, b=0, t=20),
+                height=650
+            )
+            st.plotly_chart(fig, use_container_width=True)
